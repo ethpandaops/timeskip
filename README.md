@@ -6,6 +6,8 @@
 
 <p align="center">Start Ethereum devnets already finalized.</p>
 
+<p align="center">Built on <a href="https://github.com/sigp/lighthouse">Lighthouse</a> ❤️</p>
+
 ---
 
 ## How it works
