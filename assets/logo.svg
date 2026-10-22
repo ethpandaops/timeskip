@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="timeskip">
+  <defs>
+    <linearGradient id="timeskip-gradient" gradientUnits="userSpaceOnUse" x1="14" y1="118" x2="114" y2="8">
+      <stop offset="0" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <mask id="timeskip-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <path d="M 83 52 L 83 90 L 111 71 Z" fill="#000" stroke="#000" stroke-width="20" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <g fill="none" stroke="url(#timeskip-gradient)" stroke-linecap="round" mask="url(#timeskip-cut)">
+    <circle cx="61" cy="71" r="43" stroke-width="10"/>
+    <path d="M 61 16 V 24 M 51 12 H 71" stroke-width="8"/>
+  </g>
+  <g fill="url(#timeskip-gradient)" stroke="url(#timeskip-gradient)" stroke-width="6" stroke-linejoin="round">
+    <path d="M 49 52 L 49 90 L 77 71 Z"/>
+    <path d="M 83 52 L 83 90 L 111 71 Z"/>
+  </g>
+</svg>
