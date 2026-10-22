@@ -23,6 +23,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/timeskip /usr/local/bin/timeskip
 
 FROM debian:bookworm-slim
+LABEL org.opencontainers.image.source="https://github.com/ethpandaops/timeskip"
 # python3 runs ethereum-package's chain insertion scripts inside this image.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates python3 \

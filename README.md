@@ -58,7 +58,7 @@ fast_forward:
   enabled: true
   until: finalized
   history: checkpoint
-  image: ethpandaops/timeskip:latest
+  image: ghcr.io/ethpandaops/timeskip:latest
   el_image: ghcr.io/paradigmxyz/reth:latest
 ```
 
@@ -139,7 +139,7 @@ Both the `mainnet` and `minimal` presets are handled; testing so far used `mainn
 
 ## Docker images
 
-Images are published to [`ethpandaops/timeskip`](https://hub.docker.com/r/ethpandaops/timeskip) for `linux/amd64` and `linux/arm64`. The entrypoint is `timeskip`. The image also ships `python3` for ethereum-package's insertion scripts.
+Images are published to [`ghcr.io/ethpandaops/timeskip`](https://github.com/ethpandaops/timeskip/pkgs/container/timeskip) for `linux/amd64` and `linux/arm64`. The entrypoint is `timeskip`. The image also ships `python3` for ethereum-package's insertion scripts.
 
 | Tag | Built from |
 |---|---|
