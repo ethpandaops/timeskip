@@ -41,9 +41,7 @@ The integration is not in an ethereum-package release yet.
 
 ## How it works
 
-timeskip drives Lighthouse's `BeaconChainHarness` on a manual clock with a real execution client over the Engine API. For each slot it signs the head's duties into the op pool, produces the block (and the payload envelope under Gloas), and imports it through Lighthouse's full verification path, including `engine_newPayload`. The run fails if a block does not become the head.
-
-Committee, sync and PTC messages are signed once each with the sum of the members' secret keys, which gives the aggregate signature directly. Fulu runs at 80 to 100 slots per second, Gloas at 35 to 45.
+Lighthouse's `BeaconChainHarness` on a manual clock, with reth building payloads over the Engine API. Per slot: sign all duties (one BLS signature per committee, using the summed secret keys), produce the block, import it through Lighthouse's full verification. 80 to 100 slots per second on Fulu, 35 to 45 on Gloas.
 
 ## CLI
 
