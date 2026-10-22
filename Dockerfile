@@ -12,6 +12,7 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 WORKDIR /src
 ADD --keep-git-dir=true https://github.com/sigp/lighthouse.git#${LIGHTHOUSE_REF} lighthouse
 COPY scripts/build.sh scripts/build.sh
+COPY patches patches
 COPY timeskip timeskip
 RUN scripts/build.sh --lighthouse-dir lighthouse --prepare-only
 

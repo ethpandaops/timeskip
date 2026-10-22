@@ -1,10 +1,13 @@
 use bls::PublicKeyBytes;
+use eip_3076::{Interchange, InterchangeData, InterchangeMetadata, SignedAttestation, SignedBlock};
 use serde::Serialize;
 use types::{Epoch, Hash256, Slot};
 
 use crate::signing::Vote;
 
-const INTERCHANGE_FORMAT_VERSION: &str = "5";
+const INTERCHANGE_FORMAT_VERSION: u64 = 5;
+/// Per-slot attester records kept for handover watermarks; the handover lands within a few epochs of the tip.
+const SLOT_ATTESTER_HISTORY: usize = 256;
 
 /// The latest block and attestation each validator signed while generating the chain.
 pub struct Watermarks {
@@ -26,37 +29,6 @@ pub struct SlotAttesters {
 struct AttestationMark {
     source: Epoch,
     target: Epoch,
-}
-
-/// EIP-3076 slashing-protection interchange.
-#[derive(Debug, Serialize)]
-pub struct Interchange {
-    metadata: InterchangeMetadata,
-    data: Vec<InterchangeRecord>,
-}
-
-#[derive(Debug, Serialize)]
-struct InterchangeMetadata {
-    interchange_format_version: &'static str,
-    genesis_validators_root: Hash256,
-}
-
-#[derive(Debug, Serialize)]
-struct InterchangeRecord {
-    pubkey: PublicKeyBytes,
-    signed_blocks: Vec<SignedBlockRecord>,
-    signed_attestations: Vec<SignedAttestationRecord>,
-}
-
-#[derive(Debug, Serialize)]
-struct SignedBlockRecord {
-    slot: Slot,
-}
-
-#[derive(Debug, Serialize)]
-struct SignedAttestationRecord {
-    source_epoch: Epoch,
-    target_epoch: Epoch,
 }
 
 /// Highest values across all keys, for the handover gate.
@@ -88,6 +60,10 @@ impl Watermarks {
         let Some(first) = votes.first() else {
             return;
         };
+        if self.slot_attesters.len() >= 2 * SLOT_ATTESTER_HISTORY {
+            self.slot_attesters
+                .drain(..self.slot_attesters.len() - SLOT_ATTESTER_HISTORY);
+        }
         self.slot_attesters.push(SlotAttesters {
             slot,
             source: first.source,
@@ -96,8 +72,13 @@ impl Watermarks {
         });
     }
 
+    /// The last `SLOT_ATTESTER_HISTORY` per-slot attester records.
     pub fn slot_attesters(&self) -> &[SlotAttesters] {
-        &self.slot_attesters
+        let skip = self
+            .slot_attesters
+            .len()
+            .saturating_sub(SLOT_ATTESTER_HISTORY);
+        &self.slot_attesters[skip..]
     }
 
     pub fn record_block(&mut self, validator_index: usize, slot: Slot) {
@@ -124,14 +105,17 @@ impl Watermarks {
         let data = pubkeys
             .iter()
             .enumerate()
-            .map(|(index, pubkey)| InterchangeRecord {
+            .map(|(index, pubkey)| InterchangeData {
                 pubkey: *pubkey,
                 signed_blocks: self
                     .blocks
                     .get(index)
                     .copied()
                     .flatten()
-                    .map(|slot| SignedBlockRecord { slot })
+                    .map(|slot| SignedBlock {
+                        slot,
+                        signing_root: None,
+                    })
                     .into_iter()
                     .collect(),
                 signed_attestations: self
@@ -139,9 +123,10 @@ impl Watermarks {
                     .get(index)
                     .copied()
                     .flatten()
-                    .map(|mark| SignedAttestationRecord {
+                    .map(|mark| SignedAttestation {
                         source_epoch: mark.source,
                         target_epoch: mark.target,
+                        signing_root: None,
                     })
                     .into_iter()
                     .collect(),
@@ -229,5 +214,22 @@ mod tests {
         let summary = watermarks.summary();
         assert_eq!(summary.keys_with_attestation, 3);
         assert_eq!(summary.max_target_epoch, Some(Epoch::new(1)));
+    }
+
+    #[test]
+    fn slot_attesters_keep_only_the_recent_window() {
+        let mut watermarks = Watermarks::new(1);
+        for slot in 0..1000u64 {
+            let vote = Vote {
+                validator_index: 0,
+                source: Epoch::new(0),
+                target: Epoch::new(slot / 32),
+            };
+            watermarks.record_slot_attestations(Slot::new(slot), &[vote]);
+        }
+        let kept = watermarks.slot_attesters();
+        assert_eq!(kept.len(), SLOT_ATTESTER_HISTORY);
+        assert_eq!(kept.first().map(|r| r.slot), Some(Slot::new(744)));
+        assert_eq!(kept.last().map(|r| r.slot), Some(Slot::new(999)));
     }
 }

@@ -66,7 +66,7 @@ fast_forward:
 kurtosis run github.com/ethpandaops/ethereum-package --args-file config.yaml
 ```
 
-The package places genesis in the past, runs timeskip inside the enclave against a private reth, inserts the chain into every client, and starts the validator clients with the slashing-protection records once insertion is done.
+The package places genesis in the past and runs timeskip inside the enclave against a private reth, 32 slots past the wall clock. It inserts the chain up to the current slot into every client, publishes the remaining blocks at their slot times, and starts the validator clients just before a handover slot, with slashing-protection records cut at that slot, so no slot goes empty.
 
 | Key | Default | Description |
 |---|---|---|
@@ -101,12 +101,14 @@ The execution client must be a fresh, peerless node started from the same genesi
 | `--output-dir <DIR>` | required | Where the output is written. |
 | `--until-slot <SLOT>` | | Stop after the block at this slot. |
 | `--until-finalized-epoch <EPOCH>` | | Stop once the head's finalized epoch reaches this value. |
+| `--ahead-slots <N>` | `0` | Follow the wall clock this many slots ahead, for blocks to be published at their slot times later. |
+| `--max-slot <SLOT>` | | Follow the wall clock, but never produce a block past this slot, for example right before a fork that should activate live. |
 | `--signing <MODE>` | `summed` | `summed` signs once per committee with the summed keys. `harness` signs once per validator and runs each message through gossip verification; it is about 14 times slower and gave identical chains in testing. |
 | `--fee-recipient <ADDRESS>` | `0x8943545177806ED17B9F23F0a21ee5948eCaa776` | Fee recipient for every payload. |
 | `--graffiti <TEXT>` | `timeskip` | Graffiti for every block, at most 32 bytes. |
 | `--no-json` | | Skip the JSON copy of each block and envelope. |
 
-Without `--until-slot` or `--until-finalized-epoch`, timeskip runs up to the current wall-clock slot. Logging follows `RUST_LOG`.
+Without `--until-slot` or `--until-finalized-epoch`, timeskip runs up to the current wall-clock slot, plus `--ahead-slots` and capped by `--max-slot`. Logging follows `RUST_LOG`.
 
 ## Output
 
@@ -120,11 +122,15 @@ out/
   summary.json             genesis, head, finality and fork-choice checkpoints,
                            EL head, safe and finalized hashes, watermarks, timings
   interchange.json         EIP-3076 slashing-protection interchange, one record per key
-  attesters.json           validators that attested at each slot, with source and target epochs
+  attesters.json           validators that attested at each of the last 256 slots, with source
+                           and target epochs, to cut the interchange at an earlier handover slot
   forkchoice.json          final engine_forkchoiceUpdated request (V3, or V4 for a Gloas head)
+  progress.json            head slot and finalized checkpoint, rewritten at each epoch boundary
+  anchor/                  the last finalized checkpoint: block, post-state, envelope and
+                           anchor.json, for beacon nodes to checkpoint-sync from
 ```
 
-To insert the chain, post the blocks, and their envelopes under Gloas, to the beacon nodes in slot order. `payloads/` and `forkchoice.json` can bring an execution client to the generated head directly over the Engine API. Import `interchange.json` into the validator clients before they start, so they never sign anything that conflicts with the generated history.
+To insert the chain, post the blocks, and their envelopes under Gloas, to the beacon nodes in slot order. `payloads/` and `forkchoice.json` can bring an execution client to the generated head directly over the Engine API. For long histories, beacon nodes can instead start from `anchor/` while their execution clients are fed `payloads/` up to the anchor, so only the blocks after it are posted. Import `interchange.json` into the validator clients before they start, so they never sign anything that conflicts with the generated history.
 
 ## Supported forks
 
@@ -159,7 +165,7 @@ timeskip is a crate in Lighthouse's workspace, not a standalone Cargo project. I
 ./scripts/build.sh --prepare-only                   # overlay the crate without building
 ```
 
-The binary ends up in `lighthouse/target/release/timeskip`. Run `cargo fmt`, `cargo clippy -p timeskip` and `cargo test -p timeskip` from `lighthouse/`, and edit the crate here in `timeskip/`, since every build copies it again.
+Patches in `patches/` are applied to the Lighthouse checkout when they apply cleanly and skipped with a warning when they don't. They only change performance, never the generated chain. The binary ends up in `lighthouse/target/release/timeskip`. Run `cargo fmt`, `cargo clippy -p timeskip` and `cargo test -p timeskip` from `lighthouse/`, and edit the crate here in `timeskip/`, since every build copies it again.
 
 To build the image:
 

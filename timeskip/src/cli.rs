@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
-use types::{Address, Epoch, Slot};
+use types::{Address, Epoch, GraffitiString, Slot};
 
 /// Build a finalized chain for every past slot of a devnet whose genesis lies in the past.
 #[derive(Parser, Debug)]
@@ -35,6 +35,14 @@ pub struct Cli {
     #[arg(long, value_name = "EPOCH")]
     pub until_finalized_epoch: Option<u64>,
 
+    /// Follow the wall clock as usual, but never produce a block past this slot.
+    #[arg(long, value_name = "SLOT", conflicts_with_all = ["until_slot", "until_finalized_epoch"])]
+    pub max_slot: Option<u64>,
+
+    /// Follow the wall clock this many slots ahead, for blocks published at their slot times later.
+    #[arg(long, value_name = "SLOTS", default_value_t = 0, conflicts_with_all = ["until_slot", "until_finalized_epoch"])]
+    pub ahead_slots: u64,
+
     /// Directory for blocks, envelopes, manifest, summary and the slashing-protection interchange.
     #[arg(long, value_name = "DIR")]
     pub output_dir: PathBuf,
@@ -49,7 +57,7 @@ pub struct Cli {
 
     /// Graffiti for every block, at most 32 bytes.
     #[arg(long, default_value = "timeskip")]
-    pub graffiti: String,
+    pub graffiti: GraffitiString,
 
     /// Skip writing a JSON copy of each block next to its SSZ.
     #[arg(long)]
@@ -75,7 +83,7 @@ impl SigningMode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum StopCondition {
-    WallClock,
+    WallClock { max: Option<Slot>, ahead: u64 },
     Slot(Slot),
     FinalizedEpoch(Epoch),
 }
@@ -85,7 +93,10 @@ impl Cli {
         match (self.until_slot, self.until_finalized_epoch) {
             (Some(slot), _) => StopCondition::Slot(Slot::new(slot)),
             (None, Some(epoch)) => StopCondition::FinalizedEpoch(Epoch::new(epoch)),
-            (None, None) => StopCondition::WallClock,
+            (None, None) => StopCondition::WallClock {
+                max: self.max_slot.map(Slot::new),
+                ahead: self.ahead_slots,
+            },
         }
     }
 }

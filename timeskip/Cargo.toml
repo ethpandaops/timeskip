@@ -18,6 +18,7 @@ clap = { workspace = true, features = ["env"] }
 eth2 = { workspace = true }
 eth2_network_config = { workspace = true }
 eth2_wallet = { workspace = true }
+eip_3076 = { workspace = true }
 ethereum_ssz = { workspace = true }
 execution_layer = { workspace = true }
 futures = { workspace = true }

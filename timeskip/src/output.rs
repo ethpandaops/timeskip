@@ -5,11 +5,21 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use ssz::Encode;
 use types::{
-    EthSpec, ExecPayload, ExecutionBlockHash, ForkName, Hash256, SignedBeaconBlock,
-    SignedExecutionPayloadEnvelope,
+    BeaconState, Checkpoint, EthSpec, ExecPayload, ExecutionBlockHash, ForkName, Hash256,
+    SignedBeaconBlock, SignedExecutionPayloadEnvelope,
 };
 
 use crate::engine_export;
+use crate::generator::AnchorInfo;
+
+/// What `anchor/` holds: the checkpoint block, its post-state and, from Gloas on, its envelope.
+pub struct AnchorFiles<'a, E: EthSpec> {
+    pub block: &'a SignedBeaconBlock<E>,
+    pub state: &'a BeaconState<E>,
+    pub envelope: Option<&'a SignedExecutionPayloadEnvelope<E>>,
+    pub info: &'a AnchorInfo,
+    pub genesis_fork_version: [u8; 4],
+}
 
 /// Whether a Gloas block's bid builds on its parent's payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -134,6 +144,62 @@ impl OutputWriter {
             parent_payload,
         });
         Ok(())
+    }
+
+    /// Latest epoch boundary and finalized checkpoint, replaced atomically so followers never read a partial file.
+    pub fn write_progress(&self, head_slot: u64, finalized: Checkpoint) -> Result<()> {
+        let tmp = self.dir.join("progress.json.tmp");
+        let document = serde_json::json!({
+            "head_slot": head_slot,
+            "finalized_epoch": finalized.epoch.as_u64(),
+            "finalized_root": finalized.root,
+        });
+        fs::write(&tmp, serde_json::to_vec(&document)?)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        fs::rename(&tmp, self.dir.join("progress.json")).context("replacing progress.json")
+    }
+
+    pub fn write_anchor<E: EthSpec>(&self, anchor: AnchorFiles<'_, E>) -> Result<()> {
+        let dir = self.dir.join("anchor");
+        fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let version = anchor.block.fork_name_unchecked();
+        let write = |name: &str, bytes: Vec<u8>| -> Result<()> {
+            let path = dir.join(name);
+            fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))
+        };
+        write("block.ssz", anchor.block.as_ssz_bytes())?;
+        write(
+            "block.json",
+            serde_json::to_vec(&serde_json::json!({ "version": version, "data": anchor.block }))?,
+        )?;
+        write("state.ssz", anchor.state.as_ssz_bytes())?;
+        if let Some(envelope) = anchor.envelope {
+            write("envelope.ssz", envelope.as_ssz_bytes())?;
+            write(
+                "envelope.json",
+                serde_json::to_vec(&serde_json::json!({ "version": version, "data": envelope }))?,
+            )?;
+        }
+        let message = anchor.block.message();
+        write(
+            "anchor.json",
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": version,
+                "slot": anchor.info.slot,
+                "epoch": anchor.info.epoch,
+                "block_root": anchor.info.block_root,
+                "state_root": anchor.info.state_root,
+                "parent_root": message.parent_root(),
+                "body_root": message.body_root(),
+                "proposer_index": message.proposer_index(),
+                "el_block_hash": anchor.info.el_block_hash,
+                "el_block_number": anchor.info.el_block_number,
+                "genesis_fork_version": format!("0x{}", hex::encode(anchor.genesis_fork_version)),
+                "current_justified": anchor.state.current_justified_checkpoint(),
+                "previous_justified": anchor.state.previous_justified_checkpoint(),
+                "finalized": anchor.state.finalized_checkpoint(),
+            }))?,
+        )
     }
 
     pub fn manifest(&self) -> &[ManifestEntry] {
