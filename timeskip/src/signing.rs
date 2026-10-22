@@ -107,7 +107,7 @@ pub fn sign_payload_attestations<E: EthSpec>(
         harness
             .chain
             .op_pool
-            .insert_payload_attestation_message(message)
+            .insert_payload_attestation(&message, &ptc)
             .map_err(|e| anyhow!("op pool payload attestation: {e:?}"))?;
     }
     Ok(count)
