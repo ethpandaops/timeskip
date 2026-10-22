@@ -1,0 +1,115 @@
+name: Docker
+
+on:
+  push:
+    branches:
+      - master
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      lighthouse_ref:
+        description: 'sigp/lighthouse branch or tag to build against. Refs other than unstable get <ref>-<sha7> tags and never move latest.'
+        required: false
+        default: unstable
+        type: string
+
+concurrency:
+  group: docker-${{ github.ref }}-${{ inputs.lighthouse_ref || 'unstable' }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/ethpandaops/timeskip
+  LIGHTHOUSE_REF: ${{ inputs.lighthouse_ref || 'unstable' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      latest: ${{ steps.tag.outputs.latest }}
+    steps:
+      - name: Determine image tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "$LIGHTHOUSE_REF" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid lighthouse_ref: $LIGHTHOUSE_REF" >&2
+            exit 1
+          fi
+          sha7="${GITHUB_SHA::7}"
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            tag="$RELEASE_TAG"
+          elif [ "$LIGHTHOUSE_REF" = "unstable" ]; then
+            tag="$sha7"
+          else
+            tag="${LIGHTHOUSE_REF}-${sha7}"
+          fi
+          latest=false
+          if [ "$LIGHTHOUSE_REF" = "unstable" ] && [ "$GITHUB_REF" = "refs/heads/master" ]; then
+            latest=true
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Build and push ${{ matrix.arch }} image
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}-${{ matrix.arch }}
+        run: |
+          docker build --provenance=false --sbom=false \
+            --build-arg LIGHTHOUSE_REF="$LIGHTHOUSE_REF" \
+            -t "$IMAGE:$TAG" .
+          docker run --rm "$IMAGE:$TAG" --version
+          docker push "$IMAGE:$TAG"
+
+  manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Create multi-arch manifests
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          LATEST: ${{ needs.prepare.outputs.latest }}
+        run: |
+          tags=("$TAG")
+          if [ "$LATEST" = "true" ]; then
+            tags+=("latest")
+          fi
+          {
+            echo "## Docker images"
+            echo
+            echo "Lighthouse ref: \`$LIGHTHOUSE_REF\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for tag in "${tags[@]}"; do
+            docker manifest create "$IMAGE:$tag" "$IMAGE:$TAG-amd64" "$IMAGE:$TAG-arm64"
+            docker manifest push "$IMAGE:$tag"
+            echo "- \`$IMAGE:$tag\`" >> "$GITHUB_STEP_SUMMARY"
+          done

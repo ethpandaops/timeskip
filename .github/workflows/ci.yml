@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  schedule:
+    # Daily build against Lighthouse unstable to catch upstream API drift.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      lighthouse_ref:
+        description: 'sigp/lighthouse branch, tag or full commit SHA to build against'
+        required: false
+        default: unstable
+        type: string
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  LIGHTHOUSE_REF: ${{ inputs.lighthouse_ref || 'unstable' }}
+
+jobs:
+  check:
+    name: check (lighthouse ${{ inputs.lighthouse_ref || 'unstable' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libclang-dev clang
+
+      - name: Overlay onto Lighthouse
+        run: |
+          ./scripts/build.sh --ref "$LIGHTHOUSE_REF" --prepare-only
+          echo "Lighthouse \`$LIGHTHOUSE_REF\` at \`$(git -C lighthouse rev-parse HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lighthouse
+
+      - name: Format
+        working-directory: lighthouse
+        run: cargo fmt --check -p timeskip
+
+      - name: Clippy
+        working-directory: lighthouse
+        run: cargo clippy -p timeskip --all-targets --no-deps -- -D warnings
+
+      - name: Test
+        working-directory: lighthouse
+        run: cargo test --release -p timeskip
+
+      - name: Release build
+        working-directory: lighthouse
+        run: cargo build --release -p timeskip
