@@ -38,8 +38,9 @@ use crate::watermark::Watermarks;
 
 const EL_HEAD_TIMEOUT: Duration = Duration::from_secs(15);
 const EL_HEAD_POLL: Duration = Duration::from_millis(50);
-/// Epoch-start blocks kept for the checkpoint anchor; finality trails the head by two epochs.
-const ANCHOR_CANDIDATES: usize = 4;
+/// Epoch-start blocks kept for the checkpoint anchor; finality trails the wall clock by two epochs
+/// and generation may run several epochs past it.
+const ANCHOR_CANDIDATES: usize = 8;
 
 pub struct GeneratorConfig {
     pub engine_url: String,
@@ -416,6 +417,20 @@ impl<E: EthSpec> Generator<E> {
         Ok(())
     }
 
+    /// The newest checkpoint finalized by the wall-clock slot; peers reject a finalized epoch past wall epoch - 2.
+    fn anchor_checkpoint(&self, tip_finalized: Checkpoint) -> Checkpoint {
+        let Ok(wall) = self.wall_clock_slot() else {
+            return tip_finalized;
+        };
+        self.anchor_candidates
+            .iter()
+            .rev()
+            .find(|candidate| candidate.block.slot() <= wall)
+            .map(|candidate| candidate.state.finalized_checkpoint())
+            .filter(|finalized| finalized.epoch < tip_finalized.epoch)
+            .unwrap_or(tip_finalized)
+    }
+
     /// Writes the finalized checkpoint block, its post-state and envelope under `anchor/`.
     fn write_anchor(&self, finalized: Checkpoint) -> Result<Option<AnchorInfo>> {
         let Some(candidate) = self
@@ -774,7 +789,8 @@ impl<E: EthSpec> Generator<E> {
             &engine_export::forkchoice_request(hash, safe_hash, finalized_hash, gloas_head),
         )?;
 
-        let anchor = self.write_anchor(head_state.finalized_checkpoint())?;
+        let anchor =
+            self.write_anchor(self.anchor_checkpoint(head_state.finalized_checkpoint()))?;
         let confirmed_by_engine = self.wait_for_el_head(hash).await;
         if !confirmed_by_engine {
             warn!(
