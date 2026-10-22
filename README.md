@@ -10,6 +10,13 @@
 
 A new devnet takes about 26 minutes to finalize. timeskip generates that history instead: give it a genesis with a `genesis_time` in the past and it produces a valid, finalized chain for every slot since, in seconds. With [ethereum-package](https://github.com/ethpandaops/ethereum-package) every node is at the finalized head 40 to 90 seconds after `kurtosis run`.
 
+## How it works
+
+- Runs Lighthouse's `BeaconChainHarness` on a manual slot clock, with a real reth building and executing payloads over the Engine API.
+- For every slot since genesis: sign the duties, produce the block (plus the signed payload envelope under Gloas), import it through Lighthouse's full verification path, including `engine_newPayload`.
+- Each committee, sync and PTC message is signed once with the sum of the members' secret keys, which is the aggregate signature. That is why it runs at 80 to 100 slots per second (35 to 45 on Gloas).
+- Writes out the blocks, envelopes, payload requests, a finalized checkpoint anchor and EIP-3076 slashing-protection records, so real clients can load the chain and validators can take over without equivocating.
+
 ## Quick start
 
 ```yaml
@@ -38,10 +45,6 @@ The package puts genesis in the past, runs timeskip in the enclave against a pri
 | `el_image` | `ghcr.io/paradigmxyz/reth:latest` | builds the payloads during generation |
 
 The integration is not in an ethereum-package release yet.
-
-## How it works
-
-Lighthouse's `BeaconChainHarness` on a manual clock, with reth building payloads over the Engine API. Per slot: sign all duties (one BLS signature per committee, using the summed secret keys), produce the block, import it through Lighthouse's full verification. 80 to 100 slots per second on Fulu, 35 to 45 on Gloas.
 
 ## CLI
 
