@@ -12,7 +12,7 @@ A new devnet takes about 26 minutes to finalize. timeskip generates that history
 
 ## How it works
 
-It replays the chain from genesis in a fast loop: for every slot it produces a block, has the attestations and sync messages signed, executes the payload on a real execution client, and verifies the result the same way a beacon node would. Out comes a finalized chain plus the slashing-protection records the validators need to take over.
+Finality needs a few epochs of history, so timeskip gives the devnet a past. It takes the current time, sets `genesis_time` far enough back that the chain would already be finalized by now (two epochs, plus whatever fork epoch you asked for), and then generates every slot from that genesis up to the present: a block per slot, with the attestations and sync messages signed and the payload executed on a real execution client. The clients are loaded with that history and the validators start at the current slot, with slashing-protection records covering everything timeskip signed, so they carry on as if the chain had been running the whole time.
 
 ## Quick start
 
