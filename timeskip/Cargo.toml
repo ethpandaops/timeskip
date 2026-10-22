@@ -1,0 +1,39 @@
+[package]
+name = "timeskip"
+version = "0.1.0"
+description = "Generates a devnet's early history offline so it starts already finalized"
+license = "GPL-3.0-only"
+edition = { workspace = true }
+
+[features]
+portable = ["bls/supranational-portable"]
+
+[dependencies]
+alloy-primitives = { workspace = true }
+anyhow = { workspace = true }
+async-channel = { workspace = true }
+beacon_chain = { workspace = true }
+bls = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+eth2 = { workspace = true }
+eth2_network_config = { workspace = true }
+eth2_wallet = { workspace = true }
+ethereum_ssz = { workspace = true }
+execution_layer = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+metrics = { workspace = true }
+proto_array = { workspace = true }
+rayon = { workspace = true }
+sensitive_url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slot_clock = { workspace = true }
+ssz_types = { workspace = true }
+state_processing = { workspace = true }
+task_executor = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tree_hash = { workspace = true }
+types = { workspace = true }
