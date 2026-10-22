@@ -14,12 +14,16 @@ on:
         default: unstable
         type: string
 
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: docker-${{ github.ref }}-${{ inputs.lighthouse_ref || 'unstable' }}
   cancel-in-progress: false
 
 env:
-  IMAGE: docker.io/ethpandaops/timeskip
+  IMAGE: ghcr.io/ethpandaops/timeskip
   LIGHTHOUSE_REF: ${{ inputs.lighthouse_ref || 'unstable' }}
 
 jobs:
@@ -67,11 +71,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.arch }} image
         env:
@@ -87,11 +92,12 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     steps:
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create multi-arch manifests
         env:
