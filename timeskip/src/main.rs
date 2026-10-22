@@ -9,15 +9,16 @@ mod timing;
 mod watermark;
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 use clap::Parser;
 use serde::Serialize;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use types::{EthSpec, GRAFFITI_BYTES_LEN, Graffiti, Hash256, MainnetEthSpec, MinimalEthSpec};
+use types::{EthSpec, Hash256, MainnetEthSpec, MinimalEthSpec};
 
 use crate::cli::Cli;
 use crate::generator::{ChainTip, Generator, GeneratorConfig};
@@ -69,6 +70,7 @@ async fn main() -> ExitCode {
                 .unwrap_or_else(|_| EnvFilter::new("timeskip=info,warn")),
         )
         .with_target(false)
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     match run(cli).await {
@@ -86,17 +88,6 @@ async fn run(cli: Cli) -> Result<()> {
         "minimal" => generate::<MinimalEthSpec>(cli).await,
         other => bail!("unsupported preset {other}"),
     }
-}
-
-fn parse_graffiti(value: &str) -> Result<Graffiti> {
-    let bytes = value.as_bytes();
-    ensure!(
-        bytes.len() <= GRAFFITI_BYTES_LEN,
-        "graffiti is longer than {GRAFFITI_BYTES_LEN} bytes"
-    );
-    let mut graffiti = [0u8; GRAFFITI_BYTES_LEN];
-    graffiti[..bytes.len()].copy_from_slice(bytes);
-    Ok(Graffiti::from(graffiti))
 }
 
 fn millis(started: Instant) -> f64 {
@@ -129,7 +120,7 @@ async fn generate<E: EthSpec>(cli: Cli) -> Result<()> {
             engine_url: cli.engine_url.clone(),
             jwt_secret: cli.jwt_secret.clone(),
             fee_recipient: cli.fee_recipient,
-            graffiti: parse_graffiti(&cli.graffiti)?,
+            graffiti: cli.graffiti.clone().into(),
             signing: cli.signing,
             output_dir: cli.output_dir.clone(),
             write_json: !cli.no_json,
@@ -235,6 +226,17 @@ fn print_report(summary: &Summary) {
         tip.el_head.hash,
         tip.el_head.confirmed_by_engine
     );
+    match &tip.anchor {
+        Some(anchor) => println!(
+            "anchor slot {} root {:?} state {:?}; EL #{} {:?}",
+            anchor.slot,
+            anchor.block_root,
+            anchor.state_root,
+            anchor.el_block_number,
+            anchor.el_block_hash
+        ),
+        None => println!("no anchor written"),
+    }
     println!(
         "{:<12} {:>6} {:>10} {:>8} {:>8} {:>8} {:>8}",
         "phase", "count", "total_ms", "mean", "p50", "p90", "max"

@@ -1,0 +1,143 @@
+Balance-weighted selection (PTC): hash once per 16 draws and read candidate balances once.
+Same selection with far fewer hashes and balance lookups; speeds up Gloas epoch processing over long histories.
+
+diff --git a/consensus/types/src/state/beacon_state.rs b/consensus/types/src/state/beacon_state.rs
+index 104944f1c..5dde3e313 100644
+--- a/consensus/types/src/state/beacon_state.rs
++++ b/consensus/types/src/state/beacon_state.rs
+@@ -3714,6 +3714,21 @@ impl<E: EthSpec> BeaconState<E> {
+             return Err(BeaconStateError::InvalidIndicesCount);
+         }
+ 
++        let max_effective_balance = spec.max_effective_balance_for_fork(self.fork_name_unchecked());
++        // Unshuffled candidates cycle through `indices`, so each balance is read once.
++        let balances = if shuffle_indices {
++            None
++        } else {
++            Some(
++                indices
++                    .iter()
++                    .map(|&index| self.get_effective_balance(index))
++                    .collect::<Result<Vec<_>, _>>()?,
++            )
++        };
++        let mut random_values =
++            ShufflingRandomValues::new(seed, self.fork_name_unchecked().electra_enabled());
++
+         let mut selected = Vec::with_capacity(size);
+         let mut i = 0usize;
+ 
+@@ -3726,12 +3741,22 @@ impl<E: EthSpec> BeaconState<E> {
+                         .ok_or(BeaconStateError::UnableToShuffle)?;
+             }
+ 
+-            let candidate_index = indices
++            let candidate_index = *indices
+                 .get(next_index)
+                 .ok_or(BeaconStateError::InvalidIndicesCount)?;
++            let effective_balance = match &balances {
++                Some(balances) => *balances
++                    .get(next_index)
++                    .ok_or(BeaconStateError::InvalidIndicesCount)?,
++                None => self.get_effective_balance(candidate_index)?,
++            };
+ 
+-            if self.compute_balance_weighted_acceptance(*candidate_index, seed, i, spec)? {
+-                selected.push(*candidate_index);
++            // Accept with probability proportional to `effective_balance`.
++            let random_value = random_values.get(i)?;
++            if effective_balance.safe_mul(MAX_RANDOM_VALUE)?
++                >= max_effective_balance.safe_mul(random_value)?
++            {
++                selected.push(candidate_index);
+             }
+ 
+             i.safe_add_assign(1)?;
+@@ -3740,28 +3765,6 @@ impl<E: EthSpec> BeaconState<E> {
+         Ok(selected)
+     }
+ 
+-    /// Return whether to accept the selection of the validator `index`, with probability
+-    /// proportional to its `effective_balance`, and randomness given by `seed` and `iteration`.
+-    fn compute_balance_weighted_acceptance(
+-        &self,
+-        index: usize,
+-        seed: &[u8],
+-        iteration: usize,
+-        spec: &ChainSpec,
+-    ) -> Result<bool, BeaconStateError> {
+-        // TODO(EIP-7732): Consider grabbing effective balances from the epoch cache here.
+-        // Note that this function will be used in a loop, so using cached values could be nice for performance.
+-        // However, post-gloas, this function will be used in `compute_proposer_indices`, `get_next_sync_committee_indices`, and `get_ptc`, which has ~15 call sites in total
+-        // so we will need to check each one to ensure epoch cache is initialized first, if we deem a good idea.
+-        // Currently, we can't test if making the change would work since the test suite is not ready for gloas.
+-        let effective_balance = self.get_effective_balance(index)?;
+-        let max_effective_balance = spec.max_effective_balance_for_fork(self.fork_name_unchecked());
+-        let random_value = self.shuffling_random_value(iteration, seed)?;
+-
+-        Ok(effective_balance.safe_mul(MAX_RANDOM_VALUE)?
+-            >= max_effective_balance.safe_mul(random_value)?)
+-    }
+-
+     pub fn can_builder_cover_bid(
+         &self,
+         builder_index: BuilderIndex,
+@@ -3795,6 +3798,58 @@ impl<E: EthSpec> BeaconState<E> {
+     }
+ }
+ 
++/// `shuffling_random_value` for consecutive iterations, hashing once per 16 (or 32) of them.
++struct ShufflingRandomValues {
++    preimage: Vec<u8>,
++    seed_len: usize,
++    electra: bool,
++    cached: Option<(usize, [u8; 32])>,
++}
++
++impl ShufflingRandomValues {
++    fn new(seed: &[u8], electra: bool) -> Self {
++        let mut preimage = Vec::with_capacity(seed.len().saturating_add(8));
++        preimage.extend_from_slice(seed);
++        preimage.extend_from_slice(&[0; 8]);
++        Self {
++            preimage,
++            seed_len: seed.len(),
++            electra,
++            cached: None,
++        }
++    }
++
++    fn get(&mut self, i: usize) -> Result<u64, BeaconStateError> {
++        let per_hash = if self.electra { 16 } else { 32 };
++        let block = i.safe_div(per_hash)?;
++        let digest = match self.cached {
++            Some((cached_block, digest)) if cached_block == block => digest,
++            _ => {
++                self.preimage.truncate(self.seed_len);
++                self.preimage
++                    .extend_from_slice(&int_to_bytes8(block as u64));
++                let digest = ethereum_hashing::hash_fixed(&self.preimage);
++                self.cached = Some((block, digest));
++                digest
++            }
++        };
++        let offset = i.safe_rem(per_hash)?;
++        if self.electra {
++            let start = offset.safe_mul(2)?;
++            digest
++                .get(start..start.safe_add(2)?)
++                .and_then(|bytes| bytes.try_into().ok())
++                .map(|bytes| u64::from(u16::from_le_bytes(bytes)))
++                .ok_or(BeaconStateError::ShuffleIndexOutOfBounds(start))
++        } else {
++            digest
++                .get(offset)
++                .map(|&byte| u64::from(byte))
++                .ok_or(BeaconStateError::ShuffleIndexOutOfBounds(offset))
++        }
++    }
++}
++
+ impl<E: EthSpec> ForkVersionDecode for BeaconState<E> {
+     fn from_ssz_bytes_by_fork(bytes: &[u8], fork_name: ForkName) -> Result<Self, ssz::DecodeError> {
+         Ok(map_fork_name!(fork_name, Self, <_>::from_ssz_bytes(bytes)?))

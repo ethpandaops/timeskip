@@ -88,6 +88,20 @@ if ! grep -q '^[[:space:]]*"timeskip",' "$manifest"; then
     mv "$manifest.tmp" "$manifest"
 fi
 
+# Performance patches are optional: one that no longer applies to this Lighthouse revision is skipped.
+for patch in "$repo_root"/patches/*.patch; do
+    [ -e "$patch" ] || continue
+    name="$(basename "$patch")"
+    if git -C "$lighthouse_dir" apply --check "$patch" 2>/dev/null; then
+        git -C "$lighthouse_dir" apply "$patch"
+        echo "Applied $name"
+    elif git -C "$lighthouse_dir" apply --reverse --check "$patch" 2>/dev/null; then
+        echo "Already applied $name"
+    else
+        echo "warning: $name does not apply to this Lighthouse revision, building without it" >&2
+    fi
+done
+
 revision="$(git -C "$lighthouse_dir" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)"
 echo "Overlaid timeskip onto $lighthouse_dir (lighthouse $revision)"
 

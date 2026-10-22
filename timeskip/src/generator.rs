@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,13 +31,15 @@ use types::{
 
 use crate::cli::{SigningMode, StopCondition};
 use crate::engine_export;
-use crate::output::{OutputWriter, ParentPayload};
+use crate::output::{AnchorFiles, OutputWriter, ParentPayload};
 use crate::signing::{DutySigner, Harness, new_signer, sign_payload_attestations};
 use crate::timing::PhaseTimings;
 use crate::watermark::Watermarks;
 
 const EL_HEAD_TIMEOUT: Duration = Duration::from_secs(15);
 const EL_HEAD_POLL: Duration = Duration::from_millis(50);
+/// Epoch-start blocks kept for the checkpoint anchor; finality trails the head by two epochs.
+const ANCHOR_CANDIDATES: usize = 4;
 
 pub struct GeneratorConfig {
     pub engine_url: String,
@@ -57,6 +60,19 @@ pub struct ChainTip {
     pub finality_checkpoints: FinalityCheckpoints,
     pub fork_choice: ForkChoiceCheckpoints,
     pub el_head: ElHead,
+    /// The finalized checkpoint block written under `anchor/`, if it was retained.
+    pub anchor: Option<AnchorInfo>,
+}
+
+/// Epoch-aligned checkpoint a beacon node can start from instead of genesis.
+#[derive(Debug, Clone, Serialize)]
+pub struct AnchorInfo {
+    pub slot: u64,
+    pub epoch: u64,
+    pub block_root: Hash256,
+    pub state_root: Hash256,
+    pub el_block_hash: ExecutionBlockHash,
+    pub el_block_number: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +107,14 @@ struct Proposal<E: EthSpec> {
     parent_payload: Option<ParentPayload>,
 }
 
+/// An epoch-start block with its post-state, kept until finality passes it.
+struct AnchorCandidate<E: EthSpec> {
+    block: Arc<SignedBeaconBlock<E>>,
+    block_root: Hash256,
+    state: BeaconState<E>,
+    envelope: Option<SignedExecutionPayloadEnvelope<E>>,
+}
+
 /// Drives a `BeaconChainHarness` backed by a real execution client over past slots.
 pub struct Generator<E: EthSpec> {
     harness: Harness<E>,
@@ -101,6 +125,7 @@ pub struct Generator<E: EthSpec> {
     graffiti: Graffiti,
     state: BeaconState<E>,
     state_root: Hash256,
+    anchor_candidates: VecDeque<AnchorCandidate<E>>,
     _executor_exit: async_channel::Sender<()>,
 }
 
@@ -153,6 +178,7 @@ impl<E: EthSpec> Generator<E> {
             graffiti: config.graffiti,
             state,
             state_root,
+            anchor_candidates: VecDeque::with_capacity(ANCHOR_CANDIDATES),
             _executor_exit: executor_exit,
         })
     }
@@ -219,7 +245,9 @@ impl<E: EthSpec> Generator<E> {
 
         loop {
             let done = match stop {
-                StopCondition::WallClock => slot > self.wall_clock_slot()?,
+                StopCondition::WallClock { max, ahead } => {
+                    slot > self.wall_clock_slot()? + ahead || max.is_some_and(|max| slot > max)
+                }
                 StopCondition::Slot(last) => slot > last,
                 StopCondition::FinalizedEpoch(epoch) => {
                     let limit = (epoch + 4).start_slot(slots_per_epoch);
@@ -241,6 +269,8 @@ impl<E: EthSpec> Generator<E> {
 
             if slot % slots_per_epoch == 0 {
                 let head_state = &self.harness.chain.head_snapshot().beacon_state;
+                self.output
+                    .write_progress(slot.as_u64(), head_state.finalized_checkpoint())?;
                 info!(
                     %slot,
                     head = ?self.harness.head_block_root(),
@@ -303,6 +333,9 @@ impl<E: EthSpec> Generator<E> {
         let proposer_index = pre_state
             .get_beacon_proposer_index(slot, &spec)
             .map_err(|e| anyhow!("proposer at slot {slot}: {e:?}"))?;
+        if pre_state.current_epoch() > self.state.current_epoch() {
+            self.cache_advanced_state(&mut pre_state)?;
+        }
         self.timings.record("advance", started.elapsed());
 
         let started = Instant::now();
@@ -349,9 +382,81 @@ impl<E: EthSpec> Generator<E> {
         )?;
         self.timings.record("write", started.elapsed());
 
+        if slot % E::slots_per_epoch() == 0 {
+            if self.anchor_candidates.len() == ANCHOR_CANDIDATES {
+                self.anchor_candidates.pop_front();
+            }
+            self.anchor_candidates.push_back(AnchorCandidate {
+                block: proposal.block.clone(),
+                block_root: proposal.block_root,
+                state: proposal.post_state.clone(),
+                envelope: proposal.envelope.clone(),
+            });
+        }
+
         self.state_root = block.state_root();
         self.state = proposal.post_state;
         Ok(())
+    }
+
+    /// Caches the epoch-advanced pre-state, so block import reuses it instead of redoing the epoch transition twice.
+    fn cache_advanced_state(&self, state: &mut BeaconState<E>) -> Result<()> {
+        let slot = state.slot();
+        let state_root = state
+            .update_tree_hash_cache()
+            .map_err(|e| anyhow!("hashing the advanced state at slot {slot}: {e:?}"))?;
+        let block_root = state.get_latest_block_root(state_root);
+        self.harness
+            .chain
+            .store
+            .state_cache
+            .lock()
+            .put_state(state_root, block_root, state)
+            .map_err(|e| anyhow!("caching the advanced state at slot {slot}: {e:?}"))?;
+        Ok(())
+    }
+
+    /// Writes the finalized checkpoint block, its post-state and envelope under `anchor/`.
+    fn write_anchor(&self, finalized: Checkpoint) -> Result<Option<AnchorInfo>> {
+        let Some(candidate) = self
+            .anchor_candidates
+            .iter()
+            .find(|candidate| candidate.block_root == finalized.root)
+        else {
+            warn!(epoch = %finalized.epoch, root = ?finalized.root, "Finalized block not retained, no anchor written");
+            return Ok(None);
+        };
+        let (el_block_hash, el_block_number) = match &candidate.envelope {
+            Some(envelope) => (
+                envelope.message.payload.block_hash,
+                envelope.message.payload.block_number,
+            ),
+            None => {
+                let payload = candidate
+                    .block
+                    .message()
+                    .body()
+                    .execution_payload()
+                    .map_err(|e| anyhow!("anchor block has no payload: {e:?}"))?;
+                (payload.block_hash(), payload.block_number())
+            }
+        };
+        let info = AnchorInfo {
+            slot: candidate.block.slot().as_u64(),
+            epoch: finalized.epoch.as_u64(),
+            block_root: candidate.block_root,
+            state_root: candidate.block.state_root(),
+            el_block_hash,
+            el_block_number,
+        };
+        self.output.write_anchor(AnchorFiles {
+            block: &candidate.block,
+            state: &candidate.state,
+            envelope: candidate.envelope.as_ref(),
+            info: &info,
+            genesis_fork_version: self.spec().genesis_fork_version,
+        })?;
+        Ok(Some(info))
     }
 
     /// Produces, signs and imports a pre-Gloas block, whose payload is embedded.
@@ -669,6 +774,7 @@ impl<E: EthSpec> Generator<E> {
             &engine_export::forkchoice_request(hash, safe_hash, finalized_hash, gloas_head),
         )?;
 
+        let anchor = self.write_anchor(head_state.finalized_checkpoint())?;
         let confirmed_by_engine = self.wait_for_el_head(hash).await;
         if !confirmed_by_engine {
             warn!(
@@ -697,6 +803,7 @@ impl<E: EthSpec> Generator<E> {
                 finalized_hash,
                 confirmed_by_engine,
             },
+            anchor,
         })
     }
 

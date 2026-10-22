@@ -364,7 +364,8 @@ impl<E: EthSpec> DutySigner<E> for SummedSigner {
 
         let mut participants = 0;
         let keys = self.sync_subcommittee_keys(harness, state, relative, period)?;
-        for (subcommittee_index, key) in keys.iter().enumerate() {
+        let signatures: Vec<_> = keys.par_iter().map(|key| key.sign(message)).collect();
+        for (subcommittee_index, subcommittee_signature) in signatures.iter().enumerate() {
             let mut aggregation_bits = BitVector::new();
             for position in 0..E::sync_subcommittee_size() {
                 aggregation_bits
@@ -372,7 +373,7 @@ impl<E: EthSpec> DutySigner<E> for SummedSigner {
                     .map_err(|e| anyhow!("sync aggregation bit: {e:?}"))?;
             }
             let mut signature = AggregateSignature::infinity();
-            signature.add_assign(&key.sign(message));
+            signature.add_assign(subcommittee_signature);
 
             harness
                 .chain
